@@ -68,227 +68,284 @@ df.head()
 
 ---
 
-## 3. Data Cleaning
+## 3. Data Analysis
 
 Pertama, lakukan pengecekan missing values
 ```python
-print("\n==== Missing Values ====")
-print(df.isnull().sum())
+listItem = []
+for col in df.columns :
+    listItem.append([col, df[col].dtype, df[col].isna().sum(), round((df[col].isna().sum()/len(df[col])) * 100,2),
+                    df[col].nunique(), list(df[col].drop_duplicates().sample(2).values)]);
 
-plt.figure(figsize=(10,10))
-sns.heatmap(df[['Row ID','Order Date','Date Key','Contact Name','Country','City','Region','Subregion','Customer','Customer ID','Industry','Segment','Product','Sales','Quantity','Discount','Profit']].isna())
+dfDesc = pd.DataFrame(columns=['dataFeatures', 'dataType', 'null', 'nullPct', 'unique', 'uniqueSample'],
+                     data=listItem)
+dfDesc
+```
+Barplot missing values
+```python
+missingno.bar(df,color="dodgerblue", sort="ascending", figsize=(10,5), fontsize=12);
+```
+Matrix Missing value
+```python
+missingno.matrix(df)
+```
+note: Missing value yang ditemukan nanti akan dilakukan imputation sebelum training.
+
+Kemudian mencari pesebaran data
+```python
+plt.figure(figsize = (10,5))
+sns.countplot(df['market_segment'])
+plt.show()
 ```
 
-Kemudian, cari duplicate rows.
+Histogram
 ```python
-print("\n==== Duplicate Rows ====")
-print(f"Duplicates: {df.duplicated().sum()}")
+plt.figure(figsize=(17,12))
+
+plt.subplot(221)
+sns.histplot(data=df,x='previous_cancellations',hue='is_canceled',kde=True)
+plt.title('Previous Cancellation Histogram',fontsize=20)
+
+plt.subplot(222)
+sns.histplot(data=df,x='booking_changes',hue='is_canceled',kde=True)
+plt.title('Booking Changes Histogram',fontsize=20)
+
+plt.subplot(223)
+sns.histplot(data=df,x='total_of_special_requests',hue='is_canceled',kde=True)
+plt.title('Special Requests Histogram',fontsize=20)
+
+plt.subplot(224)
+sns.histplot(data=df,x='days_in_waiting_list',hue='is_canceled',kde=True)
+plt.title('Day in Waiting List Histogram',fontsize=20)
 ```
 
-
-Terakhir lakukan feature engineering untuk mencari profit margin
+Barplot untuk pesebaran data
 ```python
-negative_sales = df[df['Sales'] < 0]
-if not negative_sales.empty:
-    print(f"Warning: Removed {len(negative_sales)} rows with Negative Sales")
-    df = df[df['Sales'] >= 0]
+count = 0
+fig = plt.figure(figsize=(20,20))
 
-    
-df['Profit Margin'] = (df['Profit'] / df['Sales'] * 100)
+for i in df.drop(columns=['is_canceled','country','previous_cancellations','booking_changes', 'days_in_waiting_list', 'total_of_special_requests', 'required_car_parking_spaces']).columns:
+    count +=1
+    ax= plt.subplot(4,2,count)
+    pd.crosstab(df[i],df['is_canceled'],normalize=0).plot(kind='bar',stacked=True,ax=ax)
+    fig.tight_layout()
 
-# Display cleaned dataset
-print(f"Cleaned Dataset Shape: {df.shape}")
-display(df.head())
-display(df.tail())
+plt.show()
+```
+Table untuk pesebaran data
+```python
+for i in df.drop(columns=['is_canceled','country','previous_cancellations','booking_changes', 'days_in_waiting_list', 'total_of_special_requests', 'required_car_parking_spaces']).columns:
+    is_canceled_df = df.groupby(i)['is_canceled'].value_counts(normalize=True).unstack()
+    display(is_canceled_df.sort_values(by=[1.0], ascending=False))
+```
+---
+
+## 4. Data Preparation
+
+Setelah melakukan analysis, data harus dipersiapkan untuk model training
+
+Tahap pertama adalah handling missing value dan grouping,
+* Missing value akan diimput menggunakan strategi constant dan value 'N/A'
+* Grouping akan mengelompokan top 10 country yang ada di dalam dataset dan sisanya menjadi 'Other'
+
+```python
+imputer_cat = SimpleImputer(strategy='constant', fill_value='N/A')
+df['country'] = imputer_cat.fit_transform(df[['country']]).ravel()
+
+top_10_countries = df['country'].value_counts().nlargest(10).index
+df['country'] = df['country'].apply(lambda x: x if x in top_10_countries else 'Other')
+```
+
+Kemudian kita melakukan encoding,
+* **RobustScaler**: untuk fitur yang memiliki outliers (`previous_cancellations`, `booking_changes`).
+* **MinMaxScaler**: untuk fitur yang memiliki boundary (`total_of_special_requests`, `required_car_parking_spaces`).
+* **Log Transformation**: untuk menghandle data yang skewed (`days_in_waiting_list`).
+* **OneHotEncoder**: untuk data kategorikal
+```python
+preprocess = ColumnTransformer(
+    transformers=[
+        ('num_robust', RobustScaler(), ['previous_cancellations', 'booking_changes']),
+        ('num_minmax', MinMaxScaler(), ['total_of_special_requests', 'required_car_parking_spaces']),
+        ('num_log', Pipeline([
+            ('log', FunctionTransformer(np.log1p)), 
+            ('scaler', MinMaxScaler())
+        ]), ['days_in_waiting_list']),
+        ('cat', OneHotEncoder(handle_unknown='ignore', drop='first'), 
+         ['country', 'market_segment', 'deposit_type', 'customer_type', 'reserved_room_type'])
+    ], remainder='passthrough'
+)
+```
+
+Selanjutnya lakukan data splitting untuk testing dan training
+
+```python
+X = df.drop(columns=['is_canceled'])
+y = df['is_canceled']
+```
+
+```python
+X_train,X_test,y_train,y_test=train_test_split(X,y,stratify=y,test_size=0.2,random_state=2021)
+```
+
+Kemudian kita akan melakukan model initiation. Dalam project ini ada 5 model yang digunakan
+1. Logistic Regression
+2. K-Nearest Neighbors (KNN)
+3. Decision Tree
+4. Random Forest
+5. XGBoost
+
+```python
+logreg = LogisticRegression()
+knn = KNeighborsClassifier()
+dt = DecisionTreeClassifier()
+rf = RandomForestClassifier()
+xgb = XGBClassifier()
 ```
 
 ---
 
-## 4. Data Analysis
+## 5. Model training
+Tahap pertama dalam training adalah melakukan benchmarking untuk megetahui model terbaik untuk klasifikasi. Ada 2 benchmarking yang akan dilakukan, K-fold dan Test Data benchmarking.
 
-Setelah melakukan cleaning dan feature engineering, analisa dapat dilakukan. 
-
-Analisa pertama yang dilakukan adalah mencari transaksi yang tidak menguntungkan.
-
+K-Fold Benchmark
 ```python
-loss_df = df[df['Profit'] < 0]
-profit_df = df[df['Profit'] >= 0]
+models = [logreg,knn,dt,rf,xgb]
+score=[]
+rata=[]
+std=[]
+for name in models:
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    clf_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocess), 
+        ('model', name)
+        ])
+    cv_scores = cross_val_score(clf_pipeline, X_train, y_train, cv=skf, scoring='roc_auc')
+    score.append(cv_scores)
+    rata.append(cv_scores.mean())
+    std.append(cv_scores.std())
+    
+pd.DataFrame({'model':['Logistic Regression', 'KNN', 'Decision Tree', 'Random Forest', 'XGB'],'mean roc_auc':rata,'sdev':std}).set_index('model').sort_values(by='mean roc_auc',ascending=False)
+```
+Test Data Benchmark
+```python
+score_roc_auc = []
 
-loss_count = len(loss_df)
-total_count = len(df)
-loss_persen = (loss_count / total_count) * 100
+def y_pred_func(i):
+    estimator=Pipeline([
+        ('preprocess',preprocess),
+        ('model',i)])
+    X_train,X_test
+    
+    estimator.fit(X_train,y_train)
+    return(estimator,estimator.predict(X_test),X_test)
 
-print(f"Total Transaksi: {total_count}")
-print(f"Transaksi yang tidak menguntungakan: {loss_count} ({loss_persen:.2f}%)")
-print(f"Total kerugian: {loss_df['Profit'].sum():.2f}")
+for i,j in zip(models, ['Logistic Regression', 'KNN', 'Decision Tree', 'Random Forest', 'XGB']):
+    estimator,y_pred,X_test = y_pred_func(i)
+    y_predict_proba = estimator.predict_proba(X_test)[:,1]
+    score_roc_auc.append(roc_auc_score(y_test,y_predict_proba))
+    print(j,'\n', classification_report(y_test,y_pred))
+    
+pd.DataFrame({'model':['Logistic Regression','KNN', 'Decision Tree', 'Random Forest', 'XGB'],
+             'roc_auc score':score_roc_auc}).set_index('model').sort_values(by='roc_auc score',ascending=False)
+```
+Setelah melakukan benchmarking, score tertinggi ada pada model XGB seperti image dibawah.
+
+<img width="317" height="248" alt="image" src="https://github.com/user-attachments/assets/4069aed0-5845-445c-9481-b36c9700fcb3" />
+
+Tahap selanjutnya adalah melakukan oversampling untuk melihat apakah performa XGB dapat ditingkatkan.
+
+Function definition
+```python
+# Functions
+def calc_train_error(X_train, y_train, model):
+#     '''returns in-sample error for already fit model.'''
+    predictions = model.predict(X_train)
+    predictProba = model.predict_proba(X_train)
+    accuracy = accuracy_score(y_train, predictions)
+    f1 = f1_score(y_train, predictions, average='macro')
+    roc_auc = roc_auc_score(y_train, predictProba[:,1])
+    recall = recall_score(y_train, predictions)
+    precision = precision_score(y_train, predictions)
+    report = classification_report(y_train, predictions)
+    return { 
+        'report': report, 
+        'f1' : f1, 
+        'roc': roc_auc, 
+        'accuracy': accuracy,
+        'recall': recall,
+        'precision': precision
+    }
+    
+    
+def calc_validation_error(X_test, y_test, model):
+#     '''returns out-of-sample error for already fit model.'''
+    predictions = model.predict(X_test)
+    predictProba = model.predict_proba(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+    f1 = f1_score(y_test, predictions, average='macro')
+    roc_auc = roc_auc_score(y_test, predictProba[:,1])
+    recall = recall_score(y_test, predictions)
+    precision = precision_score(y_test, predictions)
+    report = classification_report(y_test, predictions)
+    return { 
+        'report': report, 
+        'f1' : f1, 
+        'roc': roc_auc, 
+        'accuracy': accuracy,
+        'recall': recall,
+        'precision': precision
+    }
+    
+def calc_metrics(X_train, y_train, X_test, y_test, model):
+#     '''fits model and returns the in-sample error and out-of-sample error'''
+    model.fit(X_train, y_train)
+    train_error = calc_train_error(X_train, y_train, model)
+    validation_error = calc_validation_error(X_test, y_test, model)
+    return train_error, validation_error
 ```
 
-Selanjutnya lakukan analisa region dan subregion. Tujuannya adalah agar informasi profit per region dan sub-region dapat dilihat.
-
+Test oversampling with K-fold
 ```python
-region_analysis = df.groupby(['Region', 'Subregion']).agg({
-    'Sales': 'sum',
-    'Profit': 'sum',
-    'Order ID': 'count'
-}).reset_index()
+k = 10
+kfold = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
 
-#Rasio profit untuk region
-region_analysis['Profit Ratio'] = region_analysis['Profit'] / region_analysis['Sales']
+data = X_train
+target = y_train
 
-#Sort dari profit terendah
-region_analysis = region_analysis.sort_values(by='Profit', ascending = True)
+train_errors_without_oversampling = []
+validation_errors_without_oversampling = []
 
-display(region_analysis)
+train_errors_with_oversampling = []
+validation_errors_with_oversampling = []
 
-#Visualisasi
-plt.figure(figsize=(12, 6))
-sns.barplot(data=region_analysis, x='Subregion', y='Profit', hue='Region', palette='viridis')
-plt.title('Total Profit by Subregion')
-plt.axhline(0, color='red', linestyle='--') # Garis 0 profit
-plt.xticks(rotation=45)
-plt.show()
+for train_index, val_index in kfold.split(data, target):
+    
+    # split data
+    X_train, X_val = data.iloc[train_index], data.iloc[val_index]
+    Y_train, Y_val = target.iloc[train_index], target.iloc[val_index]
+    
+#     print(len(X_val), (len(X_train) + len(X_val)))
+    ros = RandomOverSampler()
+
+    X_ros, Y_ros = ros.fit_resample(X_train, Y_train)
+
+    # instantiate model
+    xgb = XGBClassifier()
+    estimator=Pipeline([
+        ('preprocess',preprocess),
+        ('model',xgb)
+    ])
+
+    #calculate errors
+    train_error_without_oversampling, val_error_without_oversampling = calc_metrics(X_train, Y_train, X_val, Y_val, estimator)
+    train_error_with_oversampling, val_error_with_oversampling = calc_metrics(X_ros, Y_ros, X_val, Y_val, estimator)
+    
+    # append to appropriate list
+    train_errors_without_oversampling.append(train_error_without_oversampling)
+    validation_errors_without_oversampling.append(val_error_without_oversampling)
+    
+    train_errors_with_oversampling.append(train_error_with_oversampling)
+    validation_errors_with_oversampling.append(val_error_with_oversampling)
 ```
 
-Selanjutnya analisa produk. Analisa ini dilakukan agar pengguna bisa mendapatkan informasi terkait produk mana yang mengalami kerugian, informasi ini juga ditambah dengan pesebaran diskon dan profit.
-
-```python
-# Analisa Produk
-product_analysis = df.groupby(['Product']).agg({
-    'Sales': 'sum',
-    'Profit': 'sum',
-    'Discount': 'mean'
-}).reset_index()
-
-#Filter untuk produk dengan total profit negatif
-product_negative = product_analysis[product_analysis['Profit'] < 0].sort_values('Profit')
-
-print("Produk yang mengalami profit loss:")
-print(product_negative)
-
-# Visualisasi Discount
-plt.figure(figsize=(10, 6))
-sns.scatterplot(data=product_analysis, x='Sales', y='Profit', size='Discount', hue='Discount', sizes=(20, 200), palette='coolwarm')
-plt.title('Product Performance: Sales vs Profit (Color/Size = Avg Discount)')
-plt.axhline(0, color='black', linestyle='--')
-plt.show()
-
-# Visualisasi total profit by product
-product_analysis = product_analysis.sort_values('Profit', ascending=True)
-product_analysis['Profit Status'] = product_analysis['Profit'].apply(lambda x: 'Profit' if x >= 0 else 'Loss')
-
-plt.figure(figsize=(12, 8))
-sns.barplot(data=product_analysis, x='Profit', y='Product', hue='Profit Status', dodge=False, palette={'Profit': 'green', 'Loss': 'red'})
-plt.title('Total Profit by Product')
-plt.xlabel('Total Profit')
-plt.ylabel('Product')
-plt.axvline(0, color='black', linestyle='--', linewidth=1)
-plt.legend(title='Status')
-plt.show()
-```
-
-Setelah melakukan analisa produk, lakukan hipotesis testing untuk menguji apakah discount rate yang tinggi berpengaruh dengan profit
-
-```python
-# ==== Hypothesis testing ====
-
-
-# Pembuatan threshold menjadi 2 kelompok
-# kelompok A: High Discount
-# kelompok B: Low Discount
-
-# H0: Mean dari profit margin dari transaksi High Discount sama dengan transaksi Low Discount
-# H1: Mean dari profit margin dari transaksi High Discount lebih rendah transaksi Low Discount
-high_discount = df[df['Discount'] > 0.2]['Profit Margin']
-low_discount = df[df['Discount'] <= 0.2]['Profit Margin']
-
-t_stat, p_val = stats.ttest_ind(high_discount, low_discount, equal_var=False, alternative='less')
-
-print("==== Hasil Hypothesis Testing ====")
-print(f"Mean proft margin untuk diskon tinggi: {high_discount.mean()}")
-print(f"Mean proft margin untuk diskon rendah: {low_discount.mean()}")
-print(f"T-statisik: {t_stat:.4f}")
-print(f"P-Value: {p_val:.4e}")
-
-alpha = 0.05
-if p_val < alpha:
-    print("\nTolak H0.")
-    print("Ada cukup bukti yang menyatakan bahwa penjualan dengan diskon tinggi(>20%) dapat mengakibatkan profit margin rendah")
-else:
-    print("\nGagal menolak H0")
-    print("Tidak cukup bukti untuk menyatakan penjualan dengan diskon tinggi dapat engakibatkan profit margin rendah")
-```
-
-Kemudian lakukan analisa customer untuk mencari customer mana yang memiliki profit margin rendah
-
-```python
-df_copy = df.drop_duplicates(inplace=True)
-df_copy = df[df['Sales'] >= 0]
-
-# Customer Analysis
-
-# Customer Grouping
-cust_analys = df_copy.groupby(['Customer ID', 'Customer', 'Segment']).agg({
-    'Sales': 'sum',
-    'Profit': 'sum',
-    'Discount': 'mean',
-    'Quantity': 'sum',
-    'Order ID': 'nunique'
-}).reset_index()
-
-# Customer Profit Margin
-cust_analys['Profit Margin'] = (cust_analys['Profit'] / cust_analys['Sales'] * 100)
-
-# Customer with negative profit
-unprofit_cust = cust_analys[cust_analys['Profit'] < 0].sort_values(by='Sales', ascending=False)
-
-print("\n==== Top 10 customer with negative profits ====")
-display(unprofit_cust.head(10))
-```
-
-Terkahir, lakukan analisa segmen dan correlation testing
-
-```python
-# Segment Analysis
-
-segment_analysis = cust_analys.groupby('Segment').agg({
-    'Profit': 'sum',
-    'Sales': 'sum',
-    'Discount': 'mean',
-    'Customer ID': 'count'
-}).reset_index()
-segment_analysis['Profit Margin'] = (segment_analysis['Profit']/segment_analysis['Sales'] * 100)
-print("\n==== Profitability by Segment ====")
-display(segment_analysis)
-
-# Correlation Analysis
-corr = cust_analys[['Sales', 'Profit', 'Discount','Profit Margin']].corr()
-print("\n ==== Correlation ====")
-print(corr)
-
-
-# Visualization: Correlation Heatmap
-plt.figure(figsize=(8, 6))
-sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f")
-plt.title('Correlation Matrix: Customer Performance Metrics')
-plt.show()
-
-# Hypothesis Testing
-# H0: Ada korelasi antara discount dengan profit margin customer
-# H1: Tidak ada hubungan antara discount dengan profit margin customer
-
-
-cust_analys_clean = cust_analys.dropna(subset=['Discount', 'Profit Margin'])
-
-corr_coef, p_value = stats.pearsonr(cust_analys_clean['Discount'], cust_analys_clean['Profit Margin'])
-
-print("\n==== Pearson Correlation Test ====")
-print(f"Corr Coefficient: {corr_coef:.4f}")
-print(f"P-value: {p_value:.4e}")
-
-alpha = 0.05
-if p_value < alpha:
-    print("Tolak H0: Ada bukti statistik bahwa terdapat korelasi antara diskon dan profit margin")
-else:
-    print("Gagal tolak H0: Tidak terdapat bukti untuk menyatakan bahwa terdapat korelasi antara diskon dan profit margin")
-```
 
