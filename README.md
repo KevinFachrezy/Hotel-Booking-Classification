@@ -16,6 +16,7 @@ Sebelum melakukan data analysis, ada beberapa library yang harus diimport.
 
 import pandas as pd
 import numpy as np
+from scipy.stats import randint, uniform
 
 # Visualization
 import matplotlib.pyplot as plt
@@ -348,4 +349,101 @@ for train_index, val_index in kfold.split(data, target):
     validation_errors_with_oversampling.append(val_error_with_oversampling)
 ```
 
+Kemudian kita akan melihat score di kedua tes
+Untuk validation error tanpa oversampling
+```python
+for rep in validation_errors_without_oversampling :
+    print(rep['report'])
+```
+Untuk validation error dengan oversampling
+```python
+for rep in validation_errors_with_oversampling :
+    print(rep['report'])
+```
+Setelah melihat result score dari oversampling, model yang digunakan adalah XGB yang telah dioversample.
 
+
+---
+
+## 6. Hyperparameter tuning
+Setelah melakukan benchmark, model XGB akan dilakukan hyperparameter menggunakan RandomizedSearch untuk mencari apakah konfigurasi setelah hyperparameter tuning lebih baik dari default model.
+
+Instantiate model menggunakan pipeline dan RandomOverSampler
+```python
+xgb = XGBClassifier()
+ros = RandomOverSampler()
+
+estimator=Pipeline([
+    ('oversampling', ros),
+    ('preprocess',preprocess),
+    ('model',xgb)
+])
+```
+Parameter definition
+```python
+param_dist = {
+    'model__learning_rate': uniform(0.01, 0.19),      
+    'model__max_depth': randint(3, 11),               
+    'model__min_child_weight': randint(1, 6),         
+    'model__gamma': uniform(0.0, 0.5),                
+    'model__subsample': uniform(0.6, 0.4),            
+    'model__colsample_bytree': uniform(0.6, 0.4)     
+}
+```
+Random Search definition
+```python
+random_search = RandomizedSearchCV(
+    estimator=estimator,
+    param_distributions=param_dist,
+    n_iter=40,
+    scoring="roc_auc",
+    cv=3,
+    n_jobs=-1,
+    verbose=2,
+    random_state=42
+)
+```
+
+Setelah melakukan parameter definition dan Random Search definition, kita akan melakukan fitting. Di proses fitting ini kita juga akan melakukan perbandingan antara XGB sebelum hyperparameter tuning dan setelah tuning.
+Fitting untuk random seach
+```python
+random_search.fit(X_train, y_train)
+print(random_search.best_score_)
+print(random_search.best_params_)
+```
+fitting untuk best_model menggunakan best estimator dari random search.
+```python
+best_model = random_search.best_estimator_
+best_model.fit(X_train, y_train)
+```
+Fitting untuk XGB sebelum hyperparameter tuning
+```python
+estimator=Pipeline([
+    ('preprocess',preprocess),
+    ('model',xgb)
+])
+estimator.fit(X_train, y_train)
+```
+
+Setelah melakukan fitting, kita akan melihat result klasifikasi kedua model
+ROC AUC score
+```python
+y_pred_default = estimator.predict(X_test)
+y_pred_proba_default = estimator.predict_proba(X_test)
+y_pred_tuned = best_model.predict(X_test)
+y_pred_proba_tuned = best_model.predict_proba(X_test)
+
+roc_auc_default = roc_auc_score(y_test, y_pred_proba_default[:,1])
+roc_auc_tuned = roc_auc_score(y_test, y_pred_proba_tuned[:,1])
+
+print('ROC AUC Score Default XGB : ', roc_auc_default)
+print('ROC AUC Score Tuned XGB : ', roc_auc_tuned)
+```
+Classification Report
+```python
+report_default = classification_report(y_test, y_pred_default)
+report_tuned = classification_report(y_test, y_pred_tuned)
+
+print('Classification Report Default XGB : \n', report_default)
+print('Classification Report Tuned XGB : \n', report_tuned)
+```
