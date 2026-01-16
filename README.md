@@ -1,6 +1,7 @@
 # Hotel-Booking-Classification
 Project Hotel Booking classification adalah sebuah project machine learning dimana model akan mempredeksi kemungkinan pelanggan melakukan pembatalan reservasi.
 
+Goal utama dari model yang akan ditraining di project ini adalah melakukan klasifikasi pelanggan hotel yang berpotensi membatalkan reservasi atau tidak dengan melihat metric False positive dan False Negatif. Dari metric ini user dapat melakukan tindak lanjut berdasarkan hasil prediksi model.
 ---
 
 # Penjelasan komponen sistem
